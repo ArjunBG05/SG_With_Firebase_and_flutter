@@ -26,9 +26,11 @@ class Wrapper extends StatelessWidget {
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
+
       builder: (context, authSnapshot) {
         // Firebase checking authentication
-        if (authSnapshot.connectionState == ConnectionState.waiting) {
+        if (authSnapshot.connectionState ==
+            ConnectionState.waiting) {
           return const Scaffold(
             body: Center(
               child: CircularProgressIndicator(),
@@ -43,9 +45,24 @@ class Wrapper extends StatelessWidget {
 
         final user = authSnapshot.data!;
 
-        // Get role from Firestore
+        // ------------------------------------------------
+        // EMAIL VERIFICATION CHECK
+        // ------------------------------------------------
+
+        if (!user.emailVerified) {
+          return const Scaffold(
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
+          );
+        }
+        // ------------------------------------------------
+        // GET ROLE FROM FIRESTORE
+        // ------------------------------------------------
+
         return FutureBuilder<String?>(
           future: _getUserRole(user.uid),
+
           builder: (context, roleSnapshot) {
             if (roleSnapshot.connectionState == ConnectionState.waiting) {
               return const Scaffold(
@@ -57,11 +74,13 @@ class Wrapper extends StatelessWidget {
 
             final role = roleSnapshot.data;
 
-            // No valid profile/role
+            // Profile may not exist yet while a new account is being created.
             if (role == null) {
-              FirebaseAuth.instance.signOut();
-
-              return const LoginScreen();
+              return const Scaffold(
+                body: Center(
+                  child: CircularProgressIndicator(),
+                ),
+              );
             }
 
             // Patient
