@@ -331,6 +331,44 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+
+  
+// ============================================================
+// REFRESH EMAIL VERIFICATION STATUS
+// ============================================================
+
+Future<bool> refreshEmailVerification() async {
+  try {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      _errorMessage = 'Please create your account again.';
+      return false;
+    }
+
+    await user.reload();
+
+    final refreshedUser = FirebaseAuth.instance.currentUser;
+
+    if (refreshedUser?.emailVerified == true) {
+      _errorMessage = null;
+      return true;
+    }
+
+    _errorMessage =
+        'Email is not verified yet. Please check your inbox.';
+    return false;
+  } on FirebaseAuthException catch (e) {
+    _errorMessage =
+        e.message ?? 'Could not check email verification.';
+    return false;
+  } catch (e) {
+    _errorMessage = 'Something went wrong. Please try again.';
+    return false;
+  }
+}
+
+
   // ============================================================
   // FORGOT PASSWORD
   // ============================================================
