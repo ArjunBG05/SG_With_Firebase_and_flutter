@@ -47,4 +47,5 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-secrets.h  #Added to prevent password from uploading on github
+# Added to prevent password from uploading on github
+secrets.h 
