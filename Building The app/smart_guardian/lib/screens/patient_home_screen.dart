@@ -1,8 +1,9 @@
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuth;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
-import '../services/api_service.dart';
 import '../widgets/health_card.dart';
 import 'help_screen.dart';
 import 'login_screen.dart';
@@ -15,64 +16,119 @@ class PatientHomeScreen extends StatefulWidget {
 }
 
 class _PatientHomeScreenState extends State<PatientHomeScreen> {
-  Timer? _timer;
-  SensorReadings? _readings;
-  bool _connected = false;
-  bool _fetching = false;
+  // Readings arrive every ~5 s; treat anything older than this as stale.
+  static const int _staleAfterSeconds = 20;
+
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sub;
+  Timer? _ticker;
+
+  bool _loaded = false; // first snapshot received
+  String? _error;
+  DateTime? _lastTime;
+  num? _bpm;
+  num? _spo2;
+  num? _temp;
 
   @override
   void initState() {
     super.initState();
-    _fetch();
-    _timer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => _fetch(),
-    );
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      _error = 'Not logged in';
+    } else {
+      _sub = FirebaseFirestore.instance
+          .collection('sensor_data')
+          .where('patientId', isEqualTo: uid)
+          .orderBy('timestamp', descending: true)
+          .limit(1)
+          .snapshots()
+          .listen(_onSnapshot, onError: _onError);
+    }
+
+    // Re-check data age every second so "stale" appears on its own.
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _sub?.cancel();
+    _ticker?.cancel();
     super.dispose();
   }
 
-  Future<void> _fetch() async {
-    if (_fetching) return;
-    _fetching = true;
+  void _onSnapshot(QuerySnapshot<Map<String, dynamic>> snap) {
+    if (!mounted) return;
+    setState(() {
+      _loaded = true;
+      _error = null;
+      if (snap.docs.isEmpty) {
+        _lastTime = null;
+        _bpm = _spo2 = _temp = null;
+        return;
+      }
+      final d = snap.docs.first.data();
+      _lastTime = (d['timestamp'] as Timestamp?)?.toDate();
+      _bpm = d['heartRate'] as num?;
+      _spo2 = d['spo2'] as num?;
+      _temp = d['temperature'] as num?;
+    });
+  }
 
-    try {
-      final r = await ApiService.fetchReadings();
+  void _onError(Object e) {
+    // If this is a missing-index error, the debug console shows a link.
+    debugPrint('Firestore stream error: $e');
+    if (!mounted) return;
+    setState(() => _error = e.toString());
+  }
 
-      // Debug only: remove once testing is finished.
-      debugPrint(
-        'readings: age=${r.ageSeconds} '
-        'bpm=${r.bpm} spo2=${r.spo2} '
-        'temp=${r.temperatureC}',
-      );
+  int? get _ageSeconds => _lastTime == null
+      ? null
+      : DateTime.now().difference(_lastTime!).inSeconds;
 
-      if (!mounted) return;
+  bool get _live =>
+      _error == null &&
+      _ageSeconds != null &&
+      _ageSeconds! <= _staleAfterSeconds;
 
-      setState(() {
-        _readings = r;
-        _connected = r.ageSeconds != null && r.ageSeconds! < 5;
-      });
-    } catch (e) {
-      debugPrint('fetchReadings failed: $e');
+  String get _statusText {
+    if (_error != null) return 'Error';
+    if (!_loaded) return 'Loading...';
+    if (_lastTime == null) return 'No data';
+    return _live ? 'Connected' : 'Stale';
+  }
 
-      if (!mounted) return;
-
-      setState(() => _connected = false);
-    } finally {
-      _fetching = false;
+  String get _updatedText {
+    if (_error != null) return 'Could not load readings. Check the debug console.';
+    if (!_loaded) return 'Waiting for data...';
+    final age = _ageSeconds;
+    if (age == null) return 'No readings received yet.';
+    final String ago;
+    if (age < 60) {
+      ago = '${age < 0 ? 0 : age} s ago';
+    } else if (age < 3600) {
+      ago = '${age ~/ 60} min ago';
+    } else {
+      ago = '${age ~/ 3600} h ago';
     }
+    final t = _lastTime!;
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mm = t.minute.toString().padLeft(2, '0');
+    final ss = t.second.toString().padLeft(2, '0');
+    return _live
+        ? 'Last updated: $hh:$mm:$ss ($ago)'
+        : 'Data is old. Last reading: $hh:$mm:$ss ($ago)';
   }
 
   @override
   Widget build(BuildContext context) {
-    // When the device is disconnected, don't show stale values.
-    final bpm = _connected ? _readings?.bpm : null;
-    final spo2 = _connected ? _readings?.spo2 : null;
-    final temp = _connected ? _readings?.temperatureC : null;
+    // Don't show old values as if they were current.
+    final bpm = _live ? _bpm : null;
+    final spo2 = _live ? _spo2 : null;
+    final temp = _live ? _temp : null;
+    final noFinger = _live && (_bpm == null || _spo2 == null);
 
     return Scaffold(
       appBar: AppBar(
@@ -104,6 +160,13 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
               'Your vitals',
               style: Theme.of(context).textTheme.titleLarge,
             ),
+            const SizedBox(height: 4),
+            Text(
+              _updatedText,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: _live ? null : Colors.orange.shade800,
+                  ),
+            ),
             const SizedBox(height: 12),
 
             GridView.count(
@@ -120,14 +183,12 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                   icon: Icons.favorite,
                   color: Colors.red,
                 ),
-
                 HealthCard(
                   label: 'SpO₂ (prototype)',
                   value: spo2 == null ? '-- %' : '${spo2.round()}%',
                   icon: Icons.air,
                   color: Colors.blue,
                 ),
-
                 HealthCard(
                   label: 'Temperature',
                   value: temp == null
@@ -136,15 +197,23 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                   icon: Icons.thermostat,
                   color: Colors.orange,
                 ),
-
                 HealthCard(
                   label: 'Device',
-                  value: _connected ? 'Connected' : 'Disconnected',
+                  value: _statusText,
                   icon: Icons.watch,
-                  color: _connected ? Colors.green : Colors.grey,
+                  color: _live ? Colors.green : Colors.grey,
                 ),
               ],
             ),
+
+            if (noFinger) ...[
+              const SizedBox(height: 8),
+              Text(
+                'No finger detected: place a finger on the sensor to get '
+                'heart rate and SpO₂.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
 
             const SizedBox(height: 8),
             Text(
